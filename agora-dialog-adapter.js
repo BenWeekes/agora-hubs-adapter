@@ -1,9 +1,6 @@
 import AgoraRTC  from 'agora-rtc-sdk-ng';
-import VirtualBackgroundExtension from 'agora-extension-virtual-background';
 import { debug as newDebug } from "debug";
 import EventEmitter from "eventemitter3";
-import {getParameterByName, getParameterByNameInt} from "./utils/media-url-utils";
-
 
 const debug = newDebug("agora-dialog-adapter:debug");
 const error = newDebug("agora-dialog-adapter:error");
@@ -27,9 +24,9 @@ export class DialogAdapter extends EventEmitter {
     // If your Agora appId has tokens enabled then you can set a tokenAPI URL below to request a token
     // To quickly run an AWS Lambda token service see https://github.com/BenWeekes/agora-rtc-lambda
     // set Agora appId here
-    this.appId = "0eb825fdf2e04792a458f86b259f95d7"; 
-    // set token server if tokens are enabled
-    this.tokenAPI="https://24volagzyvl2t3cziyxhiy7kpy0tdzke.lambda-url.us-east-1.on.aws/?channel="; 
+    this.appId = "You AppId Here"; 
+    // set token server if tokens are enabled else null
+    this.tokenAPI=null;// "https://24volagzyvl2t3cziyxhiy7kpy0tdzke.lambda-url.us-east-1.on.aws/?channel="; 
     this.virtualBackgroundInstance = null;
     this.extension = null;
     this.processor = null;
@@ -101,15 +98,20 @@ export class DialogAdapter extends EventEmitter {
       let token_api=this.tokenAPI+this._roomId+"&uid="+this._clientId;
       try {
         const respJson = await fetch(`${token_api}`).then(r => r.json());
-        let uid = respJson.uid;
+        //let uid = respJson.uid;
         let token = respJson.token;
-        alert(uid+token);
         await this._agora_client.join(this.appId, this._roomId, token, this._clientId);
     } catch (e) {
-      console.error("Error fetching whats-new", e);
+      console.error("Error fetching/using Agora Token ", e);
+      return;
     }
   } else {
-    await this._agora_client.join(this.appId, this._roomId, null, this._clientId);
+    try {
+      await this._agora_client.join(this.appId, this._roomId, null, this._clientId);
+    } catch (e) {
+      console.error("Failed to join Agora ",e);
+      return;
+    } 
   }
 
     
@@ -194,6 +196,7 @@ export class DialogAdapter extends EventEmitter {
 
   // public - void 
   async setLocalMediaStream(stream) {
+    
     await this._agora_client.unpublish();
 
     if (!stream) {
@@ -211,7 +214,7 @@ export class DialogAdapter extends EventEmitter {
           }
         } else if (track.kind === "video") {
           this.localTracks.videoTrack=await AgoraRTC.createCustomVideoTrack({
-            mediaStreamTrack: stream.getVideoTracks()[0], bitrateMin: getParameterByNameInt("bitrateMin",600), bitrateMax: getParameterByNameInt("bitrateMax",1500) , optimizationMode: 'motion'
+            mediaStreamTrack: stream.getVideoTracks()[0], bitrateMin: 600, bitrateMax: 1500 , optimizationMode: 'motion'
           });
           if (this.localTracks &&this.localTracks.videoTrack) {
             await this._agora_client.publish( this.localTracks.videoTrack);
@@ -284,4 +287,3 @@ export class DialogAdapter extends EventEmitter {
     document.body.dispatchEvent(new CustomEvent("unblocked", { detail: { clientId: clientId } }));
   }
 }
-

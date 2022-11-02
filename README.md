@@ -2,6 +2,10 @@
 
 To use Agora's Voice and Video (https://www.agora.io/en/) with your hubs-cloud instance do the following:   
 
+Add this dependency (or more recent version) to package.json and run npm ci      
+
+ "agora-rtc-sdk-ng": "4.13.0",     
+
 Copy agora-dialog-adapter.js from this repo to hubs/src (i.e. the same location as naf-dialog-adatar.js)    
 
 Change the import statements in src/hubs.js from    
