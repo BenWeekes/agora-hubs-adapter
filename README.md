@@ -1,5 +1,7 @@
 # agora-hubs-adapter   
 
+#Integration           
+
 To use Agora's Voice and Video (https://www.agora.io/en/) with your hubs-cloud instance do the following:   
 
 Add this dependency (or more recent version) to package.json and run npm ci      
@@ -22,7 +24,7 @@ Your hubs client will now use your Agora account for high quality, low latency v
 
 Agora provides much higher quality and lower latency voice and video calls compared with public internet, peer to peer, single SFU model.
 
-
+## Code Configurations      
 The following variables can be changed the top of the adapter to provide more control over the experience as described in the comment.     
 
     this.limitSubscriptions = true;  // set to false to always subscribe to all available streams (or the host limit of your appid which has a default of 16).    
@@ -33,3 +35,6 @@ The following variables can be changed the top of the adapter to provide more co
     this.processSubscriptonsAfter = 300; // time between subsequent subscription processes in ms (recommended 300 ms).    
 
 
+
+## Extra Content Security Policy connect-src Rules     
+  https://*.agora.io  https://*.sd-rtn.com wss://.agora.io  wss://.sd-rtn.com wss://.edge.sd-rtn.com:4702  wss://.edge.sd-rtn.com  wss://.edge.sd-rtn.com: wss://.edge.agora.io wss://.edge.agora.io:*
