@@ -1,8 +1,10 @@
 # agora-hubs-adapter   
 
-#Integration           
+To use Agora's low latency, high quality, scalable Voice and Video (https://www.agora.io/en/) with your hubs-cloud instance do the following:   
 
-To use Agora's Voice and Video (https://www.agora.io/en/) with your hubs-cloud instance do the following:   
+
+##  Integration           
+
 
 Add this dependency (or more recent version) to package.json and run npm ci      
 
