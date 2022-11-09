@@ -38,5 +38,6 @@ The following variables can be changed the top of the adapter to provide more co
 
 
 
-## Extra Content Security Policy connect-src Rules     
+## Content Security Policy
+Extra Content Security Policy connect-src Rules for your hubs cloud service onfiguration:     
   https://*.agora.io  https://*.sd-rtn.com wss://.agora.io  wss://.sd-rtn.com wss://.edge.sd-rtn.com:4702  wss://.edge.sd-rtn.com  wss://.edge.sd-rtn.com: wss://.edge.agora.io wss://.edge.agora.io:*
