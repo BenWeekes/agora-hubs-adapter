@@ -2,11 +2,6 @@ import AgoraRTC from 'agora-rtc-sdk-ng';
 import { debug as newDebug } from "debug";
 import EventEmitter from "eventemitter3";
 
-// NOT PUBLIC
-import { getParameterByName, getParameterByNameInt } from "./utils/media-url-utils";
-import VirtualBackgroundExtension from 'agora-extension-virtual-background';
-// END NOT PUBLIC
-
 const debug = newDebug("agora-dialog-adapter:debug");
 const error = newDebug("agora-dialog-adapter:error");
 const info = newDebug("agora-dialog-adapter:info");
@@ -24,7 +19,7 @@ export class DialogAdapter extends EventEmitter {
     // set Agora appId here
 
     this.appId = "Your App Id Here"; 
-
+    
     // set token server if tokens are enabled else null
     this.tokenAPI = null; // e.g. "https://24volagzyvl2t3cziyxhiy7kpy0tdzke.lambda-url.us-east-1.on.aws/?channel="; 
 
@@ -63,7 +58,7 @@ export class DialogAdapter extends EventEmitter {
     this._audioPublishers = {};
     this._audioPubCount = 0; 
     this._videoPubCount = 0;
-
+    this._adminUsers = {};
 
 
   }
@@ -139,6 +134,11 @@ export class DialogAdapter extends EventEmitter {
         this._videoPubCount = this.getMapSize(this._videoPublishers);
       }
 
+      if (window.APP.hubChannel.presence.state[uid_string].metas[0].roles.owner) {
+        that._adminUsers[uid_string] = true;
+      } else {
+        delete that._adminUsers[uid_string];
+      }
     });
 
     this._agora_clients[i].on("user-unpublished", async (user, mediaType) => {
@@ -157,14 +157,28 @@ export class DialogAdapter extends EventEmitter {
       var uid_string = user.uid.toString();
       delete that._agoraUserMap[uid_string];
       delete that._audioPublishers[uid_string];
+      delete that._adminUsers[uid_string];
+
       this._audioPubCount = this.getMapSize(this._audioPublishers);
       delete that._videoPublishers[uid_string];
       this._videoPubCount = this.getMapSize(this._videoPublishers);
 
       that.closeRemote(uid_string);
     });
-
   }
+
+
+    // listen for presence updates
+    window.APP.entryManager.scene.addEventListener("presence_updated", (update) => {
+      //console.warn("presence_updated", update);
+      if (update.detail.roles.owner) {
+        that._adminUsers[update.detail.sessionId] = true;
+        //console.warn("adding admin ", update.detail.sessionId, update.detail.roles.owner);
+      } else {
+        //console.warn("not admin " + update.detail.sessionId, update.detail.roles.owner);
+        delete that._adminUsers[update.detail.sessionId];
+      }
+    });
 
     return new Promise((resolve, reject) => {
       (async () => {
@@ -510,6 +524,11 @@ export class DialogAdapter extends EventEmitter {
         const peerId = await this.getOwnerId(others[u]);        
         others[u].object3D.getWorldPosition(tmpWorldPos)
         var distance = self.position.distanceTo(tmpWorldPos);
+        // if its admin set distance to ZERO to ensure subscription happens
+        if (this._adminUsers[peerId]) {
+          distance = 0;
+      //    console.warn("zero "+peerId);
+        }
         distances.push({ distance: distance, peerId: peerId });
       }
       distances.sort((a, b) => a.distance - b.distance);
