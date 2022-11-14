@@ -2,6 +2,11 @@ import AgoraRTC from 'agora-rtc-sdk-ng';
 import { debug as newDebug } from "debug";
 import EventEmitter from "eventemitter3";
 
+// NOT PUBLIC
+import { getParameterByName, getParameterByNameInt } from "./utils/media-url-utils";
+import VirtualBackgroundExtension from 'agora-extension-virtual-background';
+// END NOT PUBLIC
+
 const debug = newDebug("agora-dialog-adapter:debug");
 const error = newDebug("agora-dialog-adapter:error");
 const info = newDebug("agora-dialog-adapter:info");
@@ -19,7 +24,7 @@ export class DialogAdapter extends EventEmitter {
     // set Agora appId here
 
     this.appId = "Your App Id Here"; 
-    
+
     // set token server if tokens are enabled else null
     this.tokenAPI = null; // e.g. "https://24volagzyvl2t3cziyxhiy7kpy0tdzke.lambda-url.us-east-1.on.aws/?channel="; 
 
@@ -29,6 +34,8 @@ export class DialogAdapter extends EventEmitter {
     this.maxVideoSubscriptions = 6;  // when more than this number of publishers are available then only the closest X neighbours will be subscribed to.
     this.maxVideoDistanceApart = -1;  // only subscribe to video of people within this distance in hubs scene (in any direction) or set to -1 for no limit 
     this.processSubscriptonsAfter = 300; // time between subsequent subscription processes in ms (recommended 300 ms)
+    this.channelCount=1; // default 1, increase to allow more Agora channels to be used in parallel
+    this.maxHostsPerChannel=16; // default 16, maximum hosts allowed in Agora channel
 
     this.extension = null;
     this.processor = null;
@@ -41,8 +48,10 @@ export class DialogAdapter extends EventEmitter {
     this._serverParams = {};
     this._consumerStats = {};
 
-    this._agora_client = null;
+    //this._agora_client = null;
+    this._agora_clients = [];
     this._agoraUserMap = {};
+    this._myPublishClient = -1;
     this.localTracks = {
       videoTrack: null,
       audioTrack: null
@@ -54,8 +63,43 @@ export class DialogAdapter extends EventEmitter {
     this._audioPublishers = {};
     this._audioPubCount = 0; 
     this._videoPubCount = 0;
+
+
+
   }
 
+
+    // Returns the index of the first client object with an open channel.
+    async getFirstOpenChannel() {
+
+      if (this._myPublishClient > -1) {
+        return this._myPublishClient;
+      }
+  
+      this._myPublishClient = this.getFirstOpenChannelInner();
+      if (this._myPublishClient < 0)
+        return;
+
+      console.warn("set role to host for client "+ this._myPublishClient)
+      await this._agora_clients[this._myPublishClient].setClientRole("host");
+      return this._myPublishClient;
+    }
+  
+  
+    // Returns the index of the first client object with an open channel.
+    getFirstOpenChannelInner() {
+      let tempCount = 0;
+      for (var i = 0; i < this.channelCount; i++) {
+        tempCount = this._agora_clients[i]._users.length;
+        if (tempCount < this.maxHostsPerChannel) {
+          return i;
+        }
+      }
+      console.error("no channel space available");
+      return -1;
+    }
+
+    
   async connect({
     serverUrl,
     roomId,
@@ -70,26 +114,34 @@ export class DialogAdapter extends EventEmitter {
     this._serverParams = serverParams;
     this._clientId = clientId;
     this.scene = scene;
-    this._agora_client = AgoraRTC.createClient({ codec: 'vp8', mode: 'rtc', });
+
     var that = this;
 
-    this._agora_client.on("user-joined", async (user) => {
+
+    for (var i=0; i < this.channelCount; i++) {
+    //this._agora_client = AgoraRTC.createClient({ codec: 'vp8', mode: 'rtc', });
+    this._agora_clients[i] = AgoraRTC.createClient({ codec: 'vp8', mode: 'live', });
+    let currentClient = this._agora_clients[i];
+
+
+    this._agora_clients[i].on("user-joined", async (user) => {
       console.info("user-joined " + user.uid);
     });
 
-    this._agora_client.on("user-published", async (user, mediaType) => {
+    this._agora_clients[i].on("user-published", async (user, mediaType) => {
       var uid_string = user.uid.toString();
       that._agoraUserMap[uid_string] = user;
       if (mediaType === 'audio') {
-        that._audioPublishers[uid_string] = user;
+        that._audioPublishers[uid_string] = currentClient;
         this._audioPubCount = this.getMapSize(this._audioPublishers);
       } else if (mediaType === 'video') {
-        that._videoPublishers[uid_string] = user;
+        that._videoPublishers[uid_string] = currentClient;
         this._videoPubCount = this.getMapSize(this._videoPublishers);
       }
+
     });
 
-    this._agora_client.on("user-unpublished", async (user, mediaType) => {
+    this._agora_clients[i].on("user-unpublished", async (user, mediaType) => {
       var uid_string = user.uid.toString();
       if (mediaType === 'audio') {
         delete that._audioPublishers[uid_string];
@@ -98,9 +150,10 @@ export class DialogAdapter extends EventEmitter {
         delete that._videoPublishers[uid_string];
         this._videoPubCount = this.getMapSize(this._videoPublishers);
       }
+
     });
 
-    this._agora_client.on("user-left", async (user, mediaType) => {
+    this._agora_clients[i].on("user-left", async (user, mediaType) => {
       var uid_string = user.uid.toString();
       delete that._agoraUserMap[uid_string];
       delete that._audioPublishers[uid_string];
@@ -111,6 +164,7 @@ export class DialogAdapter extends EventEmitter {
       that.closeRemote(uid_string);
     });
 
+  }
 
     return new Promise((resolve, reject) => {
       (async () => {
@@ -131,19 +185,39 @@ export class DialogAdapter extends EventEmitter {
   async _joinRoom() {
     // request token
     if (this.tokenAPI !== null) {
-      let token_api = this.tokenAPI + this._roomId + "&uid=" + this._clientId;
-      try {
-        const respJson = await fetch(`${token_api}`).then(r => r.json());
-        //let uid = respJson.uid;
-        let token = respJson.token;
-        await this._agora_client.join(this.appId, this._roomId, token, this._clientId);
-      } catch (e) {
-        console.error("Error fetching/using Agora Token ", e);
-        return;
-      }
+              // Join one channel for each client object.
+              for (var i=0; i < this.channelCount; i++) {
+                let tempChannelName = this._roomId;
+                if (i>0) {
+                  tempChannelName = this._roomId+"-"+i.toString();
+                }
+                let token_api = this.tokenAPI + tempChannelName+ "&uid=" + this._clientId;
+                try {
+                  const respJson = await fetch(`${token_api}`).then(r => r.json());
+                  //let uid = respJson.uid;
+                  let token = respJson.token;
+                  //await this._agora_client.join(this.appId, this._roomId, token, this._clientId);
+                  await this._agora_clients[i].setClientRole("audience");
+                  await this._agora_clients[i].join(this.appId, tempChannelName, token, this._clientId);
+                } catch (e) {
+                  console.error("Error fetching/using Agora Token ", e);
+                  return;
+                }
+              }
     } else {
       try {
-        await this._agora_client.join(this.appId, this._roomId, null, this._clientId);
+        // Join one channel for each client object.
+        for (var i=0; i < this.channelCount; i++) {
+          let tempChannelName = this._roomId;
+          if (i>0) {
+            tempChannelName = this._roomId+"-"+i.toString();
+          }
+          await this._agora_clients[i].setClientRole("audience");
+          console.warn( " join room "+tempChannelName);
+          await this._agora_clients[i].join(this.appId, tempChannelName, null, this._clientId);
+        }
+
+       // await this._agora_client.join(this.appId, this._roomId, null, this._clientId);
       } catch (e) {
         console.error("Failed to join Agora ", e);
         return;
@@ -184,6 +258,7 @@ export class DialogAdapter extends EventEmitter {
   // public - returns promise 
   getMediaStream(clientId, kind = "audio") {
     let track;
+
     if (this._clientId === clientId) {
       // LOCAL USER
       if (kind === "audio" && this.localTracks.audioTrack) {
@@ -221,11 +296,16 @@ export class DialogAdapter extends EventEmitter {
   }
 
   // public - void 
-  async setLocalMediaStream(stream) {
-    await this._agora_client.unpublish();
+  async setLocalMediaStream(stream, isDisplayMedia) {
+    if (this._myPublishClient>-1) {
+      await this._agora_clients[this._myPublishClient].unpublish();
+    }
+
     if (!stream) {
       return;
     }
+
+   
     await Promise.all(
       stream.getTracks().map(async track => {
         if (track.kind === "audio") {
@@ -234,14 +314,17 @@ export class DialogAdapter extends EventEmitter {
           });
           if (this.isMicEnabled()) {
             this.emit("mic-state-changed", { enabled: true });
-            await this._agora_client.publish(this.localTracks.audioTrack);
+            await this.getFirstOpenChannel();  //set host
+            await this._agora_clients[this._myPublishClient].publish(this.localTracks.audioTrack);
           }
         } else if (track.kind === "video") {
           this.localTracks.videoTrack = await AgoraRTC.createCustomVideoTrack({
             mediaStreamTrack: stream.getVideoTracks()[0], bitrateMin: 600, bitrateMax: 1500, optimizationMode: 'motion'
+
           });
           if (this.localTracks && this.localTracks.videoTrack) {
-            await this._agora_client.publish(this.localTracks.videoTrack);
+            await this.getFirstOpenChannel(); // set host
+            await this._agora_clients[this._myPublishClient].publish(this.localTracks.videoTrack);
           }
         }
         this.resolvePendingMediaRequestForTrack(this._clientId, track);
@@ -329,13 +412,13 @@ export class DialogAdapter extends EventEmitter {
       return;
     }
     var user = this._agoraUserMap[uid_string];
-    var client = this._agora_client;
+    var client =  this._audioPublishers[uid_string];
     this._audioSubscriptions[uid_string] = client;
     var that = this;
     await client.subscribe(user, 'audio').then(response => {
       that.resolvePendingMediaRequestForTrack(user.uid, user.audioTrack._mediaStreamTrack);
       that.emit("stream_updated", user.uid, 'audio');
-      console.info(" subscribe audio to "+user.uid);
+      //console.info(" subscribe audio to "+user.uid);
     }).catch(e => {
       delete that._audioSubscriptions[uid_string];
       console.error(e);
@@ -348,8 +431,10 @@ export class DialogAdapter extends EventEmitter {
       if (!expected[key]) {
         var user = that._agoraUserMap[key];
         var client = that._audioSubscriptions[key];
-        var prom = await client.unsubscribe(user, that.AUDIO);
-        console.info(" unsubscribe audio to "+key)
+        if (user && client) {
+          console.info(" unsubscribe audio to "+key)
+          await client.unsubscribe(user, that.AUDIO);
+        }
         delete that._audioSubscriptions[key];
       }
     });
@@ -364,7 +449,7 @@ export class DialogAdapter extends EventEmitter {
       return;
     }
     var user = this._agoraUserMap[uid_string];
-    var client = this._agora_client;
+    var client =  this._videoPublishers[uid_string];
     this._videoSubscriptions[uid_string] = client;
     var that = this;
     await client.subscribe(user, 'video').then(response => {
@@ -383,8 +468,10 @@ export class DialogAdapter extends EventEmitter {
       if (!expected[key]) {
         var user = that._agoraUserMap[key];
         var client = that._videoSubscriptions[key];
-        console.info(" unsubscribe video to "+key)
-        var prom = await client.unsubscribe(user, that.VIDEO);
+        if (user && client) {
+          console.info(" unsubscribe video to "+key)
+          await client.unsubscribe(user, that.VIDEO);
+        }
         delete that._videoSubscriptions[key];
       }
     });
@@ -433,7 +520,6 @@ export class DialogAdapter extends EventEmitter {
         if (this._audioPublishers[peerId] && (this.maxAudioDistanceApart<=0 || distances[d].distance<this.maxAudioDistanceApart)) {
           audioSubs++;
           expectedAudioSubs[peerId] = peerId;
-        //  console.log(" nearest " + peerId + " distance is "+distances[d].distance)
         }
       }
 
