@@ -1,4 +1,5 @@
 import AgoraRTC from 'agora-rtc-sdk-ng';
+import AgoraRTM from 'agora-rtm-sdk'
 import { debug as newDebug } from "debug";
 import EventEmitter from "eventemitter3";
 
@@ -19,18 +20,19 @@ export class DialogAdapter extends EventEmitter {
     // set Agora appId here
 
     this.appId = "Your App Id Here"; 
-    
     // set token server if tokens are enabled else null
     this.tokenAPI = null; // e.g. "https://24volagzyvl2t3cziyxhiy7kpy0tdzke.lambda-url.us-east-1.on.aws/?channel="; 
 
     this.limitSubscriptions = true;  // set to false to always subscribe to all available streams (or the host limit of your appid which has a default of 16)
-    this.maxAudioSubscriptions = 8;  // when more than this number of publishers are available then only the closest X neighbours will be subscribed to.
+    this.maxAudioSubscriptions = 6;  // when more than this number of publishers are available then only the closest X neighbours will be subscribed to.
     this.maxAudioDistanceApart = -1;  // only subscribe to audio of people within this distance in hubs scene (in any direction)  or set to -1 for no limit 
     this.maxVideoSubscriptions = 6;  // when more than this number of publishers are available then only the closest X neighbours will be subscribed to.
     this.maxVideoDistanceApart = -1;  // only subscribe to video of people within this distance in hubs scene (in any direction) or set to -1 for no limit 
     this.processSubscriptonsAfter = 300; // time between subsequent subscription processes in ms (recommended 300 ms)
-    this.channelCount=1; // default 1, increase to allow more Agora channels to be used in parallel
-    this.maxHostsPerChannel=16; // default 16, maximum hosts allowed in Agora channel
+    this.channelCount = 5; // default 1, increase to allow more Agora channels to be used in parallel
+    this.maxHostsPerChannel = 16; // default 16, number of hosts in Agora channel
+    this.prioritiseAdmins = true; // treat admins as zero distance when deciding who to subscribe to
+    this.enableVADControl = true;
 
     this.extension = null;
     this.processor = null;
@@ -43,7 +45,6 @@ export class DialogAdapter extends EventEmitter {
     this._serverParams = {};
     this._consumerStats = {};
 
-    //this._agora_client = null;
     this._agora_clients = [];
     this._agoraUserMap = {};
     this._myPublishClient = -1;
@@ -54,47 +55,73 @@ export class DialogAdapter extends EventEmitter {
 
     this._videoSubscriptions = {};
     this._audioSubscriptions = {};
+    this._adminUsers = {};
+    this._vadPublisherByPriority = [];
     this._videoPublishers = {};
     this._audioPublishers = {};
-    this._audioPubCount = 0; 
+    this._audioPubCount = 0;
     this._videoPubCount = 0;
-    this._adminUsers = {};
 
+    // RTM / VAD
+    this.VAD = "VAD";
+    this.rtmClient;
+    this.rtmUid;
+    this.rtmChannelName;
+    this.rtmChannel;
+    this.RTMCHATSEPERATOR = "::";
+
+    // VAD
+    this.vadUid;
+    this.vadSend = 0;
+    this.vadSendWait = 2 * 1000;
+    this.vadRecv = 0;
+    this.vadRecvWait = 3 * 1000;
+
+    // Voice Activity Detection Internals
+    this._voiceActivityDetectionFrequency = 150;
+    this._vad_MaxAudioSamples = 400;
+    this._vad_MaxBackgroundNoiseLevel = 30;
+    this._vad_SilenceOffeset = 10;
+    this._vad_audioSamplesArr = [];
+    this._vad_audioSamplesArrSorted = [];
+    this._vad_exceedCount = 0;
+    this._vad_exceedCountThreshold = 2;
+    this._voiceActivityDetectionInterval;
 
   }
 
 
-    // Returns the index of the first client object with an open channel.
-    async getFirstOpenChannel() {
+  // Returns the index of the first client object with an open channel.
+  async getFirstOpenChannel() {
 
-      if (this._myPublishClient > -1) {
-        return this._myPublishClient;
-      }
-  
-      this._myPublishClient = this.getFirstOpenChannelInner();
-      if (this._myPublishClient < 0)
-        return;
-
-      console.warn("set role to host for client "+ this._myPublishClient)
-      await this._agora_clients[this._myPublishClient].setClientRole("host");
+    if (this._myPublishClient > -1) {
       return this._myPublishClient;
     }
-  
-  
-    // Returns the index of the first client object with an open channel.
-    getFirstOpenChannelInner() {
-      let tempCount = 0;
-      for (var i = 0; i < this.channelCount; i++) {
-        tempCount = this._agora_clients[i]._users.length;
-        if (tempCount < this.maxHostsPerChannel) {
-          return i;
-        }
-      }
-      console.error("no channel space available");
-      return -1;
-    }
 
-    
+    this._myPublishClient = this.getFirstOpenChannelInner();
+    if (this._myPublishClient < 0)
+      return;
+
+    console.warn("set client role host " + this._myPublishClient)
+    await this._agora_clients[this._myPublishClient].setClientRole("host");
+    return this._myPublishClient;
+  }
+
+
+  // Returns the index of the first client object with an open channel.
+  getFirstOpenChannelInner() {
+    let tempCount = 0;
+    for (var i = 0; i < this.channelCount; i++) {
+      tempCount = this._agora_clients[i]._users.length;
+      if (tempCount < this.maxHostsPerChannel) {
+        return i;
+      }
+    }
+    console.error("no channel space available");
+    return -1;
+  }
+
+
   async connect({
     serverUrl,
     roomId,
@@ -113,69 +140,80 @@ export class DialogAdapter extends EventEmitter {
     var that = this;
 
 
-    for (var i=0; i < this.channelCount; i++) {
-    //this._agora_client = AgoraRTC.createClient({ codec: 'vp8', mode: 'rtc', });
-    this._agora_clients[i] = AgoraRTC.createClient({ codec: 'vp8', mode: 'live', });
-    let currentClient = this._agora_clients[i];
+    for (var i = 0; i < this.channelCount; i++) {
+      //this._agora_client = AgoraRTC.createClient({ codec: 'vp8', mode: 'rtc', });
+      this._agora_clients[i] = AgoraRTC.createClient({ codec: 'vp8', mode: 'live', });
+      let currentClient = this._agora_clients[i];
 
 
-    this._agora_clients[i].on("user-joined", async (user) => {
-      console.info("user-joined " + user.uid);
-    });
+      this._agora_clients[i].on("user-joined", async (user) => {
+        console.info("user-joined " + user.uid);
+      });
 
-    this._agora_clients[i].on("user-published", async (user, mediaType) => {
-      var uid_string = user.uid.toString();
-      that._agoraUserMap[uid_string] = user;
-      if (mediaType === 'audio') {
-        that._audioPublishers[uid_string] = currentClient;
-        this._audioPubCount = this.getMapSize(this._audioPublishers);
-      } else if (mediaType === 'video') {
-        that._videoPublishers[uid_string] = currentClient;
-        this._videoPubCount = this.getMapSize(this._videoPublishers);
-      }
+      this._agora_clients[i].on("user-published", async (user, mediaType) => {
+        var uid_string = user.uid.toString();
 
-      if (window.APP.hubChannel.presence.state[uid_string].metas[0].roles.owner) {
-        that._adminUsers[uid_string] = true;
-      } else {
-        delete that._adminUsers[uid_string];
-      }
-    });
+        that._agoraUserMap[uid_string] = user;
+        if (mediaType === 'audio') {
+          that._audioPublishers[uid_string] = currentClient;
+          this._audioPubCount = this.getMapSize(this._audioPublishers);
+        } else if (mediaType === 'video') {
+          that._videoPublishers[uid_string] = currentClient;
+          this._videoPubCount = this.getMapSize(this._videoPublishers);
+        }
 
-    this._agora_clients[i].on("user-unpublished", async (user, mediaType) => {
-      var uid_string = user.uid.toString();
-      if (mediaType === 'audio') {
+
+        try {
+          if (window.APP.hubChannel.presence.state[uid_string].metas[0].roles.owner) {
+            that._adminUsers[uid_string] = true;
+          } else {
+            delete that._adminUsers[uid_string];
+          }
+        } catch (e) {
+          console.warn("no metas for " + uid_string);
+        }
+
+        
+
+      });
+
+      this._agora_clients[i].on("user-unpublished", async (user, mediaType) => {
+        var uid_string = user.uid.toString();
+        if (mediaType === 'audio') {
+          delete that._audioPublishers[uid_string];
+          this._audioPubCount = this.getMapSize(this._audioPublishers);
+          that.removeUidFromArray(that._vadPublisherByPriority, uid_string);
+        } else if (mediaType === 'video') {
+          delete that._videoPublishers[uid_string];
+          this._videoPubCount = this.getMapSize(this._videoPublishers);
+        }
+
+
+
+
+
+      });
+
+      this._agora_clients[i].on("user-left", async (user, mediaType) => {
+        var uid_string = user.uid.toString();
+        delete that._agoraUserMap[uid_string];
         delete that._audioPublishers[uid_string];
+        delete that._adminUsers[uid_string];
+        that.removeUidFromArray(that._vadPublisherByPriority, uid_string);
+
         this._audioPubCount = this.getMapSize(this._audioPublishers);
-      } else if (mediaType === 'video') {
         delete that._videoPublishers[uid_string];
         this._videoPubCount = this.getMapSize(this._videoPublishers);
-      }
 
-    });
-
-    this._agora_clients[i].on("user-left", async (user, mediaType) => {
-      var uid_string = user.uid.toString();
-      delete that._agoraUserMap[uid_string];
-      delete that._audioPublishers[uid_string];
-      delete that._adminUsers[uid_string];
-
-      this._audioPubCount = this.getMapSize(this._audioPublishers);
-      delete that._videoPublishers[uid_string];
-      this._videoPubCount = this.getMapSize(this._videoPublishers);
-
-      that.closeRemote(uid_string);
-    });
-  }
-
+        that.closeRemote(uid_string);
+      });
+    }
 
     // listen for presence updates
     window.APP.entryManager.scene.addEventListener("presence_updated", (update) => {
-      //console.warn("presence_updated", update);
       if (update.detail.roles.owner) {
         that._adminUsers[update.detail.sessionId] = true;
-        //console.warn("adding admin ", update.detail.sessionId, update.detail.roles.owner);
       } else {
-        //console.warn("not admin " + update.detail.sessionId, update.detail.roles.owner);
         delete that._adminUsers[update.detail.sessionId];
       }
     });
@@ -199,44 +237,53 @@ export class DialogAdapter extends EventEmitter {
   async _joinRoom() {
     // request token
     if (this.tokenAPI !== null) {
-              // Join one channel for each client object.
-              for (var i=0; i < this.channelCount; i++) {
-                let tempChannelName = this._roomId;
-                if (i>0) {
-                  tempChannelName = this._roomId+"-"+i.toString();
-                }
-                let token_api = this.tokenAPI + tempChannelName+ "&uid=" + this._clientId;
-                try {
-                  const respJson = await fetch(`${token_api}`).then(r => r.json());
-                  //let uid = respJson.uid;
-                  let token = respJson.token;
-                  //await this._agora_client.join(this.appId, this._roomId, token, this._clientId);
-                  await this._agora_clients[i].setClientRole("audience");
-                  await this._agora_clients[i].join(this.appId, tempChannelName, token, this._clientId);
-                } catch (e) {
-                  console.error("Error fetching/using Agora Token ", e);
-                  return;
-                }
-              }
+      // Join one channel for each client object.
+      for (var i = 0; i < this.channelCount; i++) {
+        let tempChannelName = this._roomId;
+        if (i > 0) {
+          tempChannelName = this._roomId + "-" + i.toString();
+        }
+        let token_api = this.tokenAPI + tempChannelName + "&uid=" + this._clientId;
+        try {
+          const respJson = await fetch(`${token_api}`).then(r => r.json());
+          //let uid = respJson.uid;
+          let token = respJson.token;
+          //await this._agora_client.join(this.appId, this._roomId, token, this._clientId);
+          await this._agora_clients[i].setClientRole("audience");
+          await this._agora_clients[i].join(this.appId, tempChannelName, token, this._clientId);
+        } catch (e) {
+          console.error("Error fetching/using Agora Token ", e);
+          return;
+        }
+      }
     } else {
       try {
         // Join one channel for each client object.
-        for (var i=0; i < this.channelCount; i++) {
+        for (var i = 0; i < this.channelCount; i++) {
           let tempChannelName = this._roomId;
-          if (i>0) {
-            tempChannelName = this._roomId+"-"+i.toString();
+          if (i > 0) {
+            tempChannelName = this._roomId + "-" + i.toString();
           }
           await this._agora_clients[i].setClientRole("audience");
-          console.warn( " join room "+tempChannelName);
+          console.warn(" join room " + tempChannelName);
           await this._agora_clients[i].join(this.appId, tempChannelName, null, this._clientId);
         }
-
-       // await this._agora_client.join(this.appId, this._roomId, null, this._clientId);
       } catch (e) {
         console.error("Failed to join Agora ", e);
         return;
       }
     }
+
+    if (this.enableVADControl) {
+      this.rtmChannelName = this._roomId
+      this.rtmUid = this._clientId;
+      this.initRTM();
+      this._voiceActivityDetectionInterval = setInterval(() => {
+        this.voiceActivityDetection();
+      }, this._voiceActivityDetectionFrequency);      
+    }
+
+
     await this.setLocalMediaStream(this._localMediaStream);
   }
 
@@ -271,6 +318,9 @@ export class DialogAdapter extends EventEmitter {
 
   // public - returns promise 
   getMediaStream(clientId, kind = "audio") {
+
+
+    console.warn(" getMediaStream ", clientId);
     let track;
 
     if (this._clientId === clientId) {
@@ -311,7 +361,7 @@ export class DialogAdapter extends EventEmitter {
 
   // public - void 
   async setLocalMediaStream(stream, isDisplayMedia) {
-    if (this._myPublishClient>-1) {
+    if (this._myPublishClient > -1) {
       await this._agora_clients[this._myPublishClient].unpublish();
     }
 
@@ -319,7 +369,7 @@ export class DialogAdapter extends EventEmitter {
       return;
     }
 
-   
+
     await Promise.all(
       stream.getTracks().map(async track => {
         if (track.kind === "audio") {
@@ -416,17 +466,25 @@ export class DialogAdapter extends EventEmitter {
     return Object.keys(x).length;
   }
 
+  removeUidFromArray(array_, uid) {
+    var index = array_.indexOf(uid);
+    if (index > -1) {
+      array_.splice(index, 1);
+      return true;
+    }
+    return false;
+  }
 
-   async addAudioSubsIfNotExisting(expected) {
+  async addAudioSubsIfNotExisting(expected) {
     Object.keys(expected).forEach(peerId => this.addAudioSubIfNotExisting(peerId))
-   }
+  }
 
   async addAudioSubIfNotExisting(uid_string) {
     if (this._audioSubscriptions[uid_string]) {
       return;
     }
     var user = this._agoraUserMap[uid_string];
-    var client =  this._audioPublishers[uid_string];
+    var client = this._audioPublishers[uid_string];
     this._audioSubscriptions[uid_string] = client;
     var that = this;
     await client.subscribe(user, 'audio').then(response => {
@@ -446,7 +504,7 @@ export class DialogAdapter extends EventEmitter {
         var user = that._agoraUserMap[key];
         var client = that._audioSubscriptions[key];
         if (user && client) {
-          console.info(" unsubscribe audio to "+key)
+          console.info(" unsubscribe audio to " + key)
           await client.unsubscribe(user, that.AUDIO);
         }
         delete that._audioSubscriptions[key];
@@ -456,18 +514,18 @@ export class DialogAdapter extends EventEmitter {
 
   async addVideoSubsIfNotExisting(expected) {
     Object.keys(expected).forEach(peerId => this.addVideoSubIfNotExisting(peerId))
-   }
-   
+  }
+
   async addVideoSubIfNotExisting(uid_string) {
     if (this._videoSubscriptions[uid_string]) {
       return;
     }
     var user = this._agoraUserMap[uid_string];
-    var client =  this._videoPublishers[uid_string];
+    var client = this._videoPublishers[uid_string];
     this._videoSubscriptions[uid_string] = client;
     var that = this;
     await client.subscribe(user, 'video').then(response => {
-      console.info(" subscribe video to "+user.uid)
+      console.info(" subscribe video to " + user.uid)
       that.resolvePendingMediaRequestForTrack(user.uid, user.videoTrack._mediaStreamTrack);
       that.emit("stream_updated", user.uid, 'video');
     }).catch(e => {
@@ -483,7 +541,7 @@ export class DialogAdapter extends EventEmitter {
         var user = that._agoraUserMap[key];
         var client = that._videoSubscriptions[key];
         if (user && client) {
-          console.info(" unsubscribe video to "+key)
+          console.info(" unsubscribe video to " + key)
           await client.unsubscribe(user, that.VIDEO);
         }
         delete that._videoSubscriptions[key];
@@ -494,18 +552,18 @@ export class DialogAdapter extends EventEmitter {
   async manageSubscriptions() {
     try {
       // pre
-      var _monitorStart=Date.now();      
+      var _monitorStart = Date.now();
       this._manageSubscriptions();
-      var _monitorEnd=Date.now();
-      if (_monitorEnd-_monitorStart > this.processSubscriptonsAfter/2) {
-        console.warn("agora sub manage time took ",(_monitorEnd-_monitorStart));
+      var _monitorEnd = Date.now();
+      if (_monitorEnd - _monitorStart > this.processSubscriptonsAfter / 2) {
+        console.warn("agora sub manage time took ", (_monitorEnd - _monitorStart));
       }
       // post
     } catch (e) {
       console.error(" manageSubscriptions ", e);
     }
 
-    setTimeout(() => {this.manageSubscriptions()}, this.processSubscriptonsAfter);
+    setTimeout(() => { this.manageSubscriptions() }, this.processSubscriptonsAfter);
   }
 
   async _manageSubscriptions() {
@@ -514,46 +572,49 @@ export class DialogAdapter extends EventEmitter {
     var expectedVideoSubs = {};
 
     // only check distances when more users than slots
-    if (this.limitSubscriptions && (this._audioPubCount>this.maxAudioSubscriptions || this._videoPubCount>this.maxVideoSubscriptions || this.maxAudioDistanceApart>0 || this.maxVideoDistanceApart>0) ) {
+    if (this.limitSubscriptions && (this._audioPubCount > this.maxAudioSubscriptions || this._videoPubCount > this.maxVideoSubscriptions || this.maxAudioDistanceApart > 0 || this.maxVideoDistanceApart > 0)) {
       const tmpWorldPos = new THREE.Vector3();
       let self = AFRAME.scenes[0].querySelector("a-entity#avatar-rig").object3D;
       let others = AFRAME.scenes[0].querySelectorAll("[avatar-audio-source]");
       let distances = [];
       // find distances 
       for (var u = 0; u < others.length; u++) {
-        const peerId = await this.getOwnerId(others[u]);        
+        const peerId = await this.getOwnerId(others[u]);
         others[u].object3D.getWorldPosition(tmpWorldPos)
         var distance = self.position.distanceTo(tmpWorldPos);
         // if its admin set distance to ZERO to ensure subscription happens
-        if (this._adminUsers[peerId]) {
+        if (this.prioritiseAdmins && this._adminUsers[peerId]) {
           distance = 0;
-      //    console.warn("zero "+peerId);
         }
+        if (this.enableVADControl && this._vadPublisherByPriority.indexOf(peerId)>-1) {
+          distance = 0.01; // not quite as important as admin
+        }
+
         distances.push({ distance: distance, peerId: peerId });
       }
       distances.sort((a, b) => a.distance - b.distance);
 
-      var audioSubs=0;
-      for (var d = 0; (d < distances.length && audioSubs<this.maxAudioSubscriptions); d++) {
-        var peerId=distances[d].peerId;
-        if (this._audioPublishers[peerId] && (this.maxAudioDistanceApart<=0 || distances[d].distance<this.maxAudioDistanceApart)) {
+      var audioSubs = 0;
+      for (var d = 0; (d < distances.length && audioSubs < this.maxAudioSubscriptions); d++) {
+        var peerId = distances[d].peerId;
+        if (this._audioPublishers[peerId] && (this.maxAudioDistanceApart <= 0 || distances[d].distance < this.maxAudioDistanceApart)) {
           audioSubs++;
           expectedAudioSubs[peerId] = peerId;
         }
       }
 
-      var videoSubs=0;
-      for (var d = 0; (d < distances.length && videoSubs<this.maxVideoSubscriptions); d++) {
-        var peerId=distances[d].peerId;
-        if (this._videoPublishers[peerId]  && (this.maxVideoDistanceApart<=0 || distances[d].distance<this.maxVideoDistanceApart) ) {
+      var videoSubs = 0;
+      for (var d = 0; (d < distances.length && videoSubs < this.maxVideoSubscriptions); d++) {
+        var peerId = distances[d].peerId;
+        if (this._videoPublishers[peerId] && (this.maxVideoDistanceApart <= 0 || distances[d].distance < this.maxVideoDistanceApart)) {
           videoSubs++;
           expectedVideoSubs[peerId] = peerId;
         }
       }
     } else {
       // copy all subs to expected 
-      expectedAudioSubs=this._audioPublishers;
-      expectedVideoSubs=this._videoPublishers;
+      expectedAudioSubs = this._audioPublishers;
+      expectedVideoSubs = this._videoPublishers;
     }
 
     // sync subscriptions
@@ -573,4 +634,115 @@ export class DialogAdapter extends EventEmitter {
     }
     return networkedEl.components.networked.data.owner;
   }
+
+  // Agora RTM with VAD Control
+
+  initRTM() {
+    this.rtmClient = AgoraRTM.createInstance(this.appId, { logFilter: AgoraRTM.LOG_FILTER_OFF });
+
+    this.rtmClient.on('ConnectionStateChanged', (newState, reason) => {
+    });
+
+    this.rtmClient.on('MessageFromPeer', ({ text }, senderId) => {
+        this.receiveRTM(senderId, text);
+    });
+
+    this.rtmClient.login({ token: null, uid: this.rtmUid }).then(() => {
+      this.rtmChannel = this.rtmClient.createChannel(this.rtmChannelName);
+      this.rtmChannel.join().then(() => {
+        console.warn("RTM joined");
+        this.rtmChannel.on('ChannelMessage', ({ text }, senderId) => {
+          this.receiveRTM(senderId, text);
+        });
+      }).catch(error => {
+        console.warn('AgoraRTM client join failure', error);
+      });
+    }).catch(error => {
+      console.warn('AgoraRTM client login failure', error);
+    });
+  }
+
+  receiveRTM(senderId, text) {
+    if (text.startsWith(this.VAD) && (Date.now() - this.vadRecv) > this.vadRecvWait) {
+      this.vadRecv = Date.now();
+      var vadUid = text.split(":")[1];
+      this.vadUid = vadUid;
+      console.warn("VAD received "+vadUid);
+
+      if ( this._vadPublisherByPriority.indexOf(vadUid)<0) {
+        this._vadPublisherByPriority.push(vadUid);
+      }
+      while (this._vadPublisherByPriority.length>this.maxAudioSubscriptions) {
+        this._vadPublisherByPriority.shift();
+      }
+
+      //this.promoteUidToFrontOfArrayIfPresent(this.audioPublishersByPriority, this.vadUid);
+      //this.promoteUidToFrontOfArrayIfPresent(this.videoPublishersByPriority, this.vadUid);
+    }
+  }
+
+  sendVADEvent() {
+    if (!this.rtmChannel) {
+      return;
+    }
+
+    if ((Date.now() - this.vadSend) > this.vadSendWait) {
+      this.vadSend = Date.now();
+      this.rtmChannel.sendMessage({ text: this.VAD + ':' + this._clientId }).then(() => {
+      }).catch(error => {
+        console.error('AgoraRTM VAD send failure');
+      });
+    }
+  }
+
+   getInputLevel(track) {
+    //var analyser = track._source.volumeLevelAnalyser.analyserNode;
+    var analyser = track._source.analyserNode;
+    const bufferLength = analyser.frequencyBinCount;
+    var data = new Uint8Array(bufferLength);
+    analyser.getByteFrequencyData(data);
+    var values = 0;
+    var average;
+    var length = data.length;
+    for (var i = 0; i < length; i++) {
+      values += data[i];
+    }
+    average = Math.floor(values / length);
+    return average;
+  }
+
+   voiceActivityDetection() {
+    if (!this.localTracks || !this.localTracks.audioTrack || !this.localTracks.audioTrack._enabled)
+      return;
+
+    var audioLevel = this.getInputLevel(this.localTracks.audioTrack);
+    if (audioLevel <= this._vad_MaxBackgroundNoiseLevel) {
+      if (this._vad_audioSamplesArr.length >= this._vad_MaxAudioSamples) {
+        var removed = this._vad_audioSamplesArr.shift();
+        var removedIndex = this._vad_audioSamplesArrSorted.indexOf(removed);
+        if (removedIndex > -1) {
+          this._vad_audioSamplesArrSorted.splice(removedIndex, 1);
+        }
+      }
+      this._vad_audioSamplesArr.push(audioLevel);
+      this._vad_audioSamplesArrSorted.push(audioLevel);
+      this._vad_audioSamplesArrSorted.sort((a, b) => a - b);
+    }
+    var background = Math.floor(3 * this._vad_audioSamplesArrSorted[Math.floor(this._vad_audioSamplesArrSorted.length / 2)] / 2);
+    if (audioLevel > background + this._vad_SilenceOffeset) {
+      this._vad_exceedCount++;
+    } else {
+      this._vad_exceedCount = 0;
+    }
+
+    if (this._vad_exceedCount > this._vad_exceedCountThreshold) {
+      this._vad_exceedCount = 0;
+      this.sendVADEvent();
+    }
+
+
+  }
+
+
+
 }
