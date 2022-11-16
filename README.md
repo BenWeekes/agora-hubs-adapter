@@ -13,9 +13,9 @@ Add these dependencies to package.json
  
  
  and run these (possible not all, depending on your install environment)      
- 
- nvm use 16.16.0    
- npm install     
+
+ npm install agora-rtc-sdk-ng@4.13.0    
+ npm install agora-rtm-sdk@1.6.0-204  
  npm ci 
 
 Copy agora-dialog-adapter.js from this repo to hubs/src (i.e. the same location as naf-dialog-adatar.js)    
