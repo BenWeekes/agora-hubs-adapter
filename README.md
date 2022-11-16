@@ -14,8 +14,9 @@ Add these dependencies to package.json
  
  and run   
  
- npm ci     
+ nvm use 16.16.0    
  npm install     
+ npm ci 
 
 Copy agora-dialog-adapter.js from this repo to hubs/src (i.e. the same location as naf-dialog-adatar.js)    
 
