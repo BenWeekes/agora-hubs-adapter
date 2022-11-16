@@ -12,7 +12,7 @@ Add these dependencies to package.json
  "agora-rtm-sdk": "1.6.0-204",
  
  
- and run   
+ and run these (possible not all, depending on your install environment)      
  
  nvm use 16.16.0    
  npm install     
