@@ -6,10 +6,16 @@ To use Agora's low latency, high quality, scalable Voice and Video (https://www.
 ##  Integration           
 
 
-Add these dependencies to package.json and run npm ci      
+Add these dependencies to package.json     
 
  "agora-rtc-sdk-ng": "4.13.0",     
  "agora-rtm-sdk": "1.6.0-204",
+ 
+ 
+ and run   
+ 
+ npm ci     
+ npm install     
 
 Copy agora-dialog-adapter.js from this repo to hubs/src (i.e. the same location as naf-dialog-adatar.js)    
 
