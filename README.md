@@ -1,7 +1,10 @@
 # agora-hubs-adapter   
 
-To use Agora's low latency, high quality, scalable Voice and Video (https://www.agora.io/en/) with your hubs-cloud instance do the following:   
+You can now use Agora's low latency, high quality, scalable Voice and Video (https://www.agora.io/en/) with your hubs-cloud instance.    
 
+Spatial audio works out of the box and you can also configure how many people are subscribed to at any one time based on who is currently talking (voice activity detection) and their distance from you in the hubs scene.      
+
+To use Agora with your hubs-cloud instance please do the following:   
 
 ##  Integration           
 
