@@ -783,8 +783,7 @@ export class DialogAdapter extends EventEmitter {
   }
 
   getInputLevel(track) {
-    //var analyser = track._source.volumeLevelAnalyser.analyserNode;
-    var analyser = track._source.analyserNode;
+    var analyser = track._source.volumeLevelAnalyser.analyserNode || track._source.analyserNode;
     const bufferLength = analyser.frequencyBinCount;
     var data = new Uint8Array(bufferLength);
     analyser.getByteFrequencyData(data);
