@@ -783,8 +783,16 @@ export class DialogAdapter extends EventEmitter {
   }
 
   getInputLevel(track) {
-    //var analyser = track._source.volumeLevelAnalyser.analyserNode;
-    var analyser = track._source.analyserNode;
+
+    var analyser;
+    if (track._source.volumeLevelAnalyser && track._source.volumeLevelAnalyser.analyserNode && track._source.volumeLevelAnalyser.analyserNode.frequencyBinCount) {
+        analyser=track._source.volumeLevelAnalyser.analyserNode;
+    } else if (track._source.analyserNode && track._source.analyserNode.frequencyBinCount) {
+        analyser=track._source.analyserNode;
+    } else {
+        return 0;
+    }
+
     const bufferLength = analyser.frequencyBinCount;
     var data = new Uint8Array(bufferLength);
     analyser.getByteFrequencyData(data);

@@ -23,10 +23,13 @@ Add these dependencies to package.json
 
 Copy agora-dialog-adapter.js from this repo to hubs/src (i.e. the same location as naf-dialog-adatar.js)    
 
-Change the import statements in src/hubs.js from    
-import { DialogAdapter, DIALOG_CONNECTION_ERROR_FATAL, DIALOG_CONNECTION_CONNECTED } from "./naf-dialog-adapter";    
-to    
-import { DialogAdapter, DIALOG_CONNECTION_ERROR_FATAL, DIALOG_CONNECTION_CONNECTED } from "./agora-dialog-adapter";            
+Change src/app.ts        
+Remove: import { DialogAdapter } from "./naf-dialog-adapter";        
+Add:    import { DialogAdapter} from "./agora-dialog-adapter";        
+
+Change src/hub.js        
+Remove: import { DIALOG_CONNECTION_ERROR_FATAL, DIALOG_CONNECTION_CONNECTED } from "./naf-dialog-adapter";        
+Add:    import { DIALOG_CONNECTION_ERROR_FATAL, DIALOG_CONNECTION_CONNECTED } from "./agora-dialog-adapter";        
 
 If you are using tokens with your Agora AppID please see     
 https://github.com/BenWeekes/agora-rtc-lambda     
