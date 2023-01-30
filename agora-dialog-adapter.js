@@ -1,4 +1,3 @@
-
 import AgoraRTC from 'agora-rtc-sdk-ng';
 import AgoraRTM from 'agora-rtm-sdk'
 import { debug as newDebug } from "debug";
@@ -16,12 +15,12 @@ export class DialogAdapter extends EventEmitter {
   constructor() {
     super();
 
+    console.info("constructing Agora DialogAdapter");
     // If your Agora appId has tokens enabled then you can set a tokenAPI URL below to request a token
     // To quickly run an AWS Lambda token service see https://github.com/BenWeekes/agora-rtc-lambda
     // set Agora appId here
 
     this.appId = "Your App Id Here"; 
-    
     // set token server if tokens are enabled else null
     this.tokenAPI = null; // e.g. "https://24volagzyvl2t3cziyxhiy7kpy0tdzke.lambda-url.us-east-1.on.aws/?channel="; 
 
@@ -31,7 +30,7 @@ export class DialogAdapter extends EventEmitter {
     this.maxVideoSubscriptions = 6;  // when more than this number of publishers are available then only the closest X neighbours will be subscribed to.
     this.maxVideoDistanceApart = -1;  // only subscribe to video of people within this distance in hubs scene (in any direction) or set to -1 for no limit 
     this.processSubscriptonsAfter = 300; // time between subsequent subscription processes in ms (recommended 300 ms)
-    this.channelCount = 5; // default 1, increase to allow more Agora channels to be used in parallel
+    this.channelCount = 1; // default 1, increase to allow more Agora channels to be used in parallel
     this.maxHostsPerChannel = 16; // default 16, number of hosts in Agora channel
     this.prioritiseAdmins = true; // treat admins as zero distance when deciding who to subscribe to
     this.enableVADControl = true;
@@ -280,8 +279,9 @@ export class DialogAdapter extends EventEmitter {
           if (!this.enableAgoraRTC) {
             await this._agora_clients[i].setClientRole("audience");
           }
-          console.warn(" join room " + tempChannelName);
-          await this._agora_clients[i].join(this.appId, tempChannelName, null, this._clientId);
+          
+          let uid=await this._agora_clients[i].join(this.appId, tempChannelName, null, this._clientId);
+          console.info(" join Agora Channel " + tempChannelName+" as "+ uid);
         }
       } catch (e) {
         console.error("Failed to join Agora ", e);
@@ -331,6 +331,7 @@ export class DialogAdapter extends EventEmitter {
 
   // public - returns promise 
   getMediaStream(clientId, kind = "audio") {
+    console.info("getMediaStream ",clientId);
     let track;
 
     if (this._clientId === clientId) {
@@ -370,27 +371,34 @@ export class DialogAdapter extends EventEmitter {
   }
 
   // public - void 
-  async setLocalMediaStream(stream, isDisplayMedia) {
+  async setLocalMediaStream(stream, isDisplayMedia) {    
     if (this._myPublishClient > -1) {
-      await this._agora_clients[this._myPublishClient].unpublish();
+      if (this.localTracks.videoTrack) {
+        console.info("Agora unpublishing any video");
+        await this._agora_clients[this._myPublishClient].unpublish(this.localTracks.videoTrack);
+       this.localTracks.videoTrack=null;
+      }
     }
 
     if (!stream) {
       return;
     }
 
-
+    console.info("setLocalMediaStream ",stream.getTracks());
     await Promise.all(
       stream.getTracks().map(async track => {
-        if (track.kind === "audio") {
+        if (track.kind === "audio" && !this.localTracks.audioTrack) {
+          // avoid unpublish / publish audio
           this.localTracks.audioTrack = await AgoraRTC.createCustomAudioTrack({
             mediaStreamTrack: stream.getAudioTracks()[0]
           });
           if (this.isMicEnabled()) {
-            this.emit("mic-state-changed", { enabled: true });
             await this.getFirstOpenChannel();  //set host
             await this._agora_clients[this._myPublishClient].publish(this.localTracks.audioTrack);
           }
+          this.emit("mic-state-changed", { enabled: this.isMicEnabled() });
+          console.info("mic ",this.isMicEnabled() );
+
         } else if (track.kind === "video") {
           this.localTracks.videoTrack = await AgoraRTC.createCustomVideoTrack({
             mediaStreamTrack: stream.getVideoTracks()[0], bitrateMin: 600, bitrateMax: 1500, optimizationMode: 'motion'
@@ -427,12 +435,13 @@ export class DialogAdapter extends EventEmitter {
     }
   }
 
-  enableMicrophone(enabled) {
+  async enableMicrophone(enabled) {
+    console.info(" enableMicrophone ",enabled);
     if (!this.localTracks || !this.localTracks.audioTrack) {
       console.error("Tried to toggle mic but there's no mic.");
       enabled = false;
     } else {
-      this.localTracks.audioTrack.setEnabled(enabled);
+      await this.localTracks.audioTrack.setEnabled(enabled);
       this.sendVADEvent(); // turned mic on with intention
     }
     this.emit("mic-state-changed", { enabled: enabled });
@@ -501,7 +510,7 @@ export class DialogAdapter extends EventEmitter {
     await client.subscribe(user, 'audio').then(response => {
       that.resolvePendingMediaRequestForTrack(user.uid, user.audioTrack._mediaStreamTrack);
       that.emit("stream_updated", user.uid, 'audio');
-      //console.info(" subscribe audio to "+user.uid);
+      console.info(" subscribe audio to "+user.uid);
     }).catch(e => {
       delete that._audioSubscriptions[uid_string];
       console.error(e);
@@ -515,8 +524,8 @@ export class DialogAdapter extends EventEmitter {
         var user = that._agoraUserMap[key];
         var client = that._audioSubscriptions[key];
         if (user && client) {
-          //console.info(" unsubscribe audio to " + key)
-          await client.unsubscribe(user, that.AUDIO);
+          console.info(" unsubscribe audio to " + key)
+          await client.unsubscribe(user,'audio');
         }
         delete that._audioSubscriptions[key];
       }
@@ -553,7 +562,7 @@ export class DialogAdapter extends EventEmitter {
         var client = that._videoSubscriptions[key];
         if (user && client) {
           //console.info(" unsubscribe video to " + key)
-          await client.unsubscribe(user, that.VIDEO);
+          await client.unsubscribe(user,'video');
         }
         delete that._videoSubscriptions[key];
       }
@@ -678,7 +687,7 @@ export class DialogAdapter extends EventEmitter {
         }
       }
 
-    console.log("audioSubs ",audioSubs, "audioExpect ",Object.keys(expectedAudioSubs).length, "audioPubs ", Object.keys(this._audioPublishers).length,"videoSubs ",videoSubs, "videoExpected ",Object.keys(expectedVideoSubs).length,  "videoPubs ", Object.keys(this._videoPublishers).length);
+    console.log("audioSubs ",audioSubs, "audioExpect ",Object.keys(expectedAudioSubs).length, "audioPubs ", Object.keys(this._audioPublishers).length,"videoSubs ",videoSubs, "videoExpected ",Object.keys(expectedVideoSubs).length,  "videoPubs ", Object.keys(this._videoPublishers).length, "audioExpected ",Object.keys(expectedAudioSubs));
     } else {
       // copy all subs to expected 
       expectedAudioSubs = this._audioPublishers;
@@ -858,3 +867,4 @@ export class DialogAdapter extends EventEmitter {
 
 
 }
+
