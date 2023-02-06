@@ -508,7 +508,7 @@ export class DialogAdapter extends EventEmitter {
     this._audioSubscriptions[uid_string] = client;
     var that = this;
     await client.subscribe(user, 'audio').then(response => {
-      user.audioTrack.play();
+      //user.audioTrack.play();
       that.resolvePendingMediaRequestForTrack(user.uid, user.audioTrack._mediaStreamTrack);
       that.emit("stream_updated", user.uid, 'audio');
       console.info(" subscribe audio to "+user.uid);
