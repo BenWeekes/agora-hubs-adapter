@@ -508,6 +508,7 @@ export class DialogAdapter extends EventEmitter {
     this._audioSubscriptions[uid_string] = client;
     var that = this;
     await client.subscribe(user, 'audio').then(response => {
+      user.audioTrack.play();
       that.resolvePendingMediaRequestForTrack(user.uid, user.audioTrack._mediaStreamTrack);
       that.emit("stream_updated", user.uid, 'audio');
       console.info(" subscribe audio to "+user.uid);
@@ -586,6 +587,16 @@ export class DialogAdapter extends EventEmitter {
     setTimeout(() => { this.manageSubscriptions() }, this.processSubscriptonsAfter);
   }
 
+  async listAudioSourcesByOwner() {
+    let audioSources = [];
+    if (AFRAME.scenes[0]) {
+       AFRAME.scenes[0].querySelectorAll("[avatar-audio-source]").forEach(async source => {
+         audioSources.push((await NAF.utils.getNetworkedEntity(source)).components.networked.data.owner);
+       });
+    }
+    return audioSources;
+  }
+
   async _manageSubscriptions() {
 
     var expectedAudioSubs = {};
@@ -604,7 +615,7 @@ export class DialogAdapter extends EventEmitter {
       // if lots of people have spoken recently then we just want those closest
     
     // only check distances when more users than slots
-    if (this.limitSubscriptions) { // && (this._audioPubCount > this.maxAudioSubscriptions || this._videoPubCount > this.maxVideoSubscriptions || this.maxAudioDistanceApart > 0 || this.maxVideoDistanceApart > 0)) {
+    if (AFRAME.scenes[0] && this.limitSubscriptions  && (this._audioPubCount > this.maxAudioSubscriptions || this._videoPubCount > this.maxVideoSubscriptions || this.maxAudioDistanceApart > 0 || this.maxVideoDistanceApart > 0)) {
       const tmpWorldPos = new THREE.Vector3();
       let self = AFRAME.scenes[0].querySelector("a-entity#avatar-rig").object3D;
       let others = AFRAME.scenes[0].querySelectorAll("[avatar-audio-source]");
@@ -701,6 +712,21 @@ export class DialogAdapter extends EventEmitter {
 
     this.addVideoSubsIfNotExisting(expectedVideoSubs);
     this.removeVideoSubsIfNotExpected(expectedVideoSubs);
+
+    // play the audio stream directly of any audio subscriptions with no audio source
+    let audioSources = (await this.listAudioSourcesByOwner());
+    Object.keys(expectedAudioSubs).forEach((subscription_uid) => {
+      let user = this.getAgoraUser(subscription_uid);
+      if (user && user.audioTrack) {
+        if (!audioSources.includes(subscription_uid)) {
+          user.audioTrack.play();
+          console.info("play audio directly ", subscription_uid, user.audioTrack);
+        } else if (user.audioTrack._played) {
+          user.audioTrack.stop();
+          console.info("end play audio directly ", subscription_uid, user.audioTrack);
+        }
+      }
+    });
   }
 
   async getOwnerId(el) {
