@@ -109,7 +109,7 @@ export class DialogAdapter extends EventEmitter {
 
     
     if (!this.enableAgoraRTC) {
-      console.warn("set client role host " + this._myPublishClient);
+      console.info("set client role host " + this._myPublishClient);
       await this._agora_clients[this._myPublishClient].setClientRole("host");
     }
     
@@ -752,7 +752,7 @@ export class DialogAdapter extends EventEmitter {
     this.rtmClient.login({ token: null, uid: this.rtmUid }).then(() => {
       this.rtmChannel = this.rtmClient.createChannel(this.rtmChannelName);
       this.rtmChannel.join().then(() => {
-        console.warn("RTM joined");
+        console.info("RTM joined");
         this.rtmChannel.on('ChannelMessage', ({ text }, senderId) => {
           this.receiveRTM(senderId, text);
         });
